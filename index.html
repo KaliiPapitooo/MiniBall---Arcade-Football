@@ -745,6 +745,33 @@ input[type=range]{accent-color:#d6d6da}
     p.vx+=(dx*speed-p.vx)*blend;p.vy+=(dy*speed-p.vy)*blend;
     p.x+=p.vx*dt;p.y+=p.vy*dt;boundPlayer(p);
   }
+  // v23.3: natychmiastowa lokalna predykcja ruchu gościa.
+  // Serwer/host nadal rozstrzyga kolizje i pozycję; predykcja dotyczy wyłącznie
+  // wizualnej pozycji własnego awatara, aby naciśnięcie klawisza nie czekało na RTT.
+  function predictGuestMovement(p,dt,pressed,control){
+    if(!p||!running||paused||finished||replayState.phase||!dt)return;
+    if(warmupRemaining<=0&&(restart.active||kickoffActive)){
+      // Wznowienia i rozpoczęcie gry mają bariery kontrolowane przez hosta.
+      // Nadal przewidujemy ruch, lecz autorytatywne pozycje korygują ograniczenia.
+    }
+    const sliding=control?.slide?.active||(p===remote&&remoteSlide.active);
+    if(sliding)return;
+    let dx=Number(pressed.has('d'))-Number(pressed.has('a'));
+    let dy=Number(pressed.has('s'))-Number(pressed.has('w'));
+    const len=Math.hypot(dx,dy)||1;dx/=len;dy/=len;
+    const cooldown=Number(control?.slide?.cooldown??(p===remote?remoteSlide.cooldown:0))||0;
+    const exhaustion=Number(control?.exhaustion??(p===remote?remoteExhaustion:0))||0;
+    const staminaLeft=Number(control?.stamina??(p===remote?remoteStamina:100));
+    const sprint=pressed.has('shift')&&staminaLeft>0&&exhaustion<=0&&cooldown<=0&&(dx!==0||dy!==0);
+    const speed=cooldown>0?111.105:(exhaustion>0?111.1:(sprint?200:p.maxSpeed));
+    const nearBall=Math.hypot(ball.x-p.x,ball.y-p.y)<p.r+ball.r+30&&Math.hypot(ball.vx,ball.vy)<240;
+    const turning=(dx||dy)?p.vx*dx+p.vy*dy<Math.hypot(p.vx,p.vy)*.65:false;
+    const response=(dx||dy)?(sprint?3.8:3.4):4.3;
+    const blend=1-Math.exp(-(nearBall&&turning?response*1.38:response)*dt);
+    p.vx+=(dx*speed-p.vx)*blend;p.vy+=(dy*speed-p.vy)*blend;
+    p.x+=p.vx*dt;p.y+=p.vy*dt;
+    boundPlayer(p);
+  }
   function moveExtra(dt){
     for(const [id,p] of extraPlayers){const c=extraControls.get(id);if(!c)continue;
       c.slide.cooldown=Math.max(0,c.slide.cooldown-dt);c.powerFlash=Math.max(0,c.powerFlash-dt);
@@ -2025,7 +2052,16 @@ input[type=range]{accent-color:#d6d6da}
       remotePowerFlash=Math.max(0,remotePowerFlash-dt);
       powerFlash=Math.max(0,powerFlash-dt);
       for(const c of extraControls.values())c.powerFlash=Math.max(0,(c.powerFlash||0)-dt);
-      // Smooth snapshots; small local prediction for responsive remote movement.
+      // Własny awatar reaguje natychmiast na lokalne klawisze.
+      // Pozycja z hosta pozostaje źródłem prawdy i jest korygowana poniżej.
+      if(onlineRole==='guest'&&guestTarget){
+        const me=localAvatar();
+        const ownControl=selfNetId===primaryRemoteId
+          ?{stamina:remoteStamina,exhaustion:remoteExhaustion,slide:remoteSlide}
+          :extraControls.get(selfNetId);
+        predictGuestMovement(me,dt,keys,ownControl);
+      }
+      // Interpolacja pozostałych zawodników i łagodna korekta lokalnej predykcji.
       if(guestTarget){
         const elapsed=Math.min(.11,Math.max(0,(performance.now()-guestStateTime)/1000));
         const follow=1-Math.exp(-18*dt);
@@ -2036,9 +2072,9 @@ input[type=range]{accent-color:#d6d6da}
           const lead=isLocal?Math.min(elapsed,.075):Math.min(elapsed,.05);
           const tx=target.x+(target.vx||0)*lead,ty=target.y+(target.vy||0)*lead;
           const delta=Math.hypot(tx-obj.x,ty-obj.y);
-          const correction=isLocal?1-Math.exp(-23*dt):follow;
-          if(delta>150){obj.x=tx;obj.y=ty;}else{obj.x+=(tx-obj.x)*correction;obj.y+=(ty-obj.y)*correction;}
-          obj.vx=target.vx||0;obj.vy=target.vy||0;
+          const correction=isLocal?1-Math.exp(-6*dt):follow;
+          if(delta>(isLocal?95:150)){obj.x=tx;obj.y=ty;}else{obj.x+=(tx-obj.x)*correction;obj.y+=(ty-obj.y)*correction;}
+          if(!isLocal){obj.vx=target.vx||0;obj.vy=target.vy||0;}
         }
         for(const [id,target] of smoothExtras){
           const p=extraPlayers.get(id);if(!p)continue;
@@ -2046,9 +2082,9 @@ input[type=range]{accent-color:#d6d6da}
           const lead=Math.min(elapsed,isLocal?.075:.05);
           const tx=target.x+target.vx*lead,ty=target.y+target.vy*lead;
           const delta=Math.hypot(tx-p.x,ty-p.y);
-          const correction=isLocal?1-Math.exp(-23*dt):follow;
-          if(delta>150){p.x=tx;p.y=ty;}else{p.x+=(tx-p.x)*correction;p.y+=(ty-p.y)*correction;}
-          p.vx=target.vx;p.vy=target.vy;
+          const correction=isLocal?1-Math.exp(-6*dt):follow;
+          if(delta>(isLocal?95:150)){p.x=tx;p.y=ty;}else{p.x+=(tx-p.x)*correction;p.y+=(ty-p.y)*correction;}
+          if(!isLocal){p.vx=target.vx;p.vy=target.vy;}
         }
         remoteStamina=guestTarget.remoteStamina??remoteStamina;
         remoteSprint=!!guestTarget.remoteSprint;remoteGhost=!!guestTarget.remoteGhost;hostGhostVisual=!!guestTarget.hostGhost;if(guestTarget.remoteSlide)Object.assign(remoteSlide,guestTarget.remoteSlide);remotePowerFlash=Math.max(remotePowerFlash,guestTarget.remotePowerFlash||0);powerFlash=Math.max(powerFlash,guestTarget.powerFlash||0);
