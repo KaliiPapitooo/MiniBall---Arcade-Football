@@ -726,17 +726,32 @@ input[type=range]{accent-color:#d6d6da}
     ball.r=Number(netSettings.ballSize)||11;playerShotMultiplier=Number(netSettings.shotPower)/100;chargeDuration=Number(netSettings.chargeTime);slideDistance=Number(netSettings.slideDistance);
     for(const [id,suffix] of [['ballSize',' px'],['shotPower','%'],['powerShotSpeed','%'],['chargeTime',' s'],['slideDistance',' px']]){const out=$(id+'Value');if(out)out.textContent=$(id).value+suffix;}
   }
+  // v23.2: identyczny model bezwładności, skrętów, sprintu i staminy dla wszystkich zawodników.
+  function sharedMovement(p,dt,pressed,condition){
+    let dx=Number(pressed.has('d')||pressed.has('arrowright'))-Number(pressed.has('a')||pressed.has('arrowleft'));
+    let dy=Number(pressed.has('s')||pressed.has('arrowdown'))-Number(pressed.has('w')||pressed.has('arrowup'));
+    const len=Math.hypot(dx,dy)||1;dx/=len;dy/=len;
+    if(dx||dy){condition.facing.x=dx;condition.facing.y=dy;}
+    condition.exhaustion=Math.max(0,condition.exhaustion-dt);
+    let sprint=pressed.has('shift')&&condition.stamina>0&&condition.exhaustion<=0&&condition.slideCooldown<=0&&(dx!==0||dy!==0);
+    if(sprint){condition.stamina=Math.max(0,condition.stamina-staminaDrain*dt);if(condition.stamina<=0){condition.stamina=0;condition.exhaustion=2;sprint=false;}}
+    else if(condition.exhaustion<=0)condition.stamina=Math.min(staminaMax,condition.stamina+staminaRecovery*dt);
+    condition.sprint=sprint;
+    const speed=condition.slideCooldown>0?111.105:(condition.exhaustion>0?111.1:(sprint?200:p.maxSpeed));
+    const nearBall=Math.hypot(ball.x-p.x,ball.y-p.y)<p.r+ball.r+30&&Math.hypot(ball.vx,ball.vy)<240;
+    const turning=(dx||dy)?p.vx*dx+p.vy*dy<Math.hypot(p.vx,p.vy)*.65:false;
+    const response=(dx||dy)?(sprint?3.8:3.4):4.3;
+    const blend=1-Math.exp(-(nearBall&&turning?response*1.38:response)*dt);
+    p.vx+=(dx*speed-p.vx)*blend;p.vy+=(dy*speed-p.vy)*blend;
+    p.x+=p.vx*dt;p.y+=p.vy*dt;boundPlayer(p);
+  }
   function moveExtra(dt){
     for(const [id,p] of extraPlayers){const c=extraControls.get(id);if(!c)continue;
-      let dx=Number(c.keys.has('d'))-Number(c.keys.has('a')),dy=Number(c.keys.has('s'))-Number(c.keys.has('w'));
-      const len=Math.hypot(dx,dy)||1;dx/=len;dy/=len;if(dx||dy){c.facing.x=dx;c.facing.y=dy;}
-      c.exhaustion=Math.max(0,c.exhaustion-dt);c.slide.cooldown=Math.max(0,c.slide.cooldown-dt);c.powerFlash=Math.max(0,c.powerFlash-dt);
+      c.slide.cooldown=Math.max(0,c.slide.cooldown-dt);c.powerFlash=Math.max(0,c.powerFlash-dt);
       if(c.slide.active){const sl=c.slide;sl.elapsed=Math.min(sl.duration,sl.elapsed+dt);p.x=sl.startX+sl.dx*slideDistance*(sl.elapsed/sl.duration);p.y=sl.startY+sl.dy*slideDistance*(sl.elapsed/sl.duration);boundPlayer(p);if(sl.elapsed>=sl.duration)sl.active=false;continue;}
-      c.sprint=c.keys.has('shift')&&c.stamina>0&&c.exhaustion<=0&&c.slide.cooldown<=0&&(dx||dy);
-      if(c.sprint){c.stamina=Math.max(0,c.stamina-staminaDrain*dt);if(c.stamina===0){c.exhaustion=2;c.sprint=false;}}
-      else if(c.exhaustion<=0)c.stamina=Math.min(100,c.stamina+staminaRecovery*dt);
-      const speed=(c.slide.cooldown>0?111.105:(c.exhaustion>0?111.1:(c.sprint?200:p.maxSpeed)));const blend=1-Math.exp(-3.4*dt);
-      p.vx+=(dx*speed-p.vx)*blend;p.vy+=(dy*speed-p.vy)*blend;p.x+=p.vx*dt;p.y+=p.vy*dt;boundPlayer(p);
+      const state={stamina:c.stamina,exhaustion:c.exhaustion,slideCooldown:c.slide.cooldown,facing:c.facing,sprint:c.sprint};
+      sharedMovement(p,dt,c.keys,state);
+      c.stamina=state.stamina;c.exhaustion=state.exhaustion;c.sprint=state.sprint;
     }
   }
   function triggerPowerFlash(p){
@@ -938,18 +953,10 @@ input[type=range]{accent-color:#d6d6da}
   }
   function resetRemote(){Object.assign(remote,{x:W*(isPlayerOnRight()?.28:.72),y:H*.65,vx:0,vy:0});remoteStamina=100;remoteExhaustion=0;remoteKeys.clear();remoteGhost=false;remoteSlide.active=false;remoteSlide.cooldown=0;remotePowerFlash=0;}
   function moveRemote(dt){
-    let dx=Number(remoteKeys.has('d'))-Number(remoteKeys.has('a'));
-    let dy=Number(remoteKeys.has('s'))-Number(remoteKeys.has('w'));
-    const len=Math.hypot(dx,dy)||1;dx/=len;dy/=len;
-    if(dx||dy){remoteFacing.x=dx;remoteFacing.y=dy;}
     if(remoteSlide.active){moveRemoteSlide(dt);return;}
-    remoteExhaustion=Math.max(0,remoteExhaustion-dt);
-    remoteSprint=remoteKeys.has('shift')&&remoteStamina>0&&remoteExhaustion<=0&&remoteSlide.cooldown<=0&&(dx!==0||dy!==0);
-    if(remoteSprint){remoteStamina=Math.max(0,remoteStamina-staminaDrain*dt);if(remoteStamina<=0){remoteStamina=0;remoteExhaustion=2;remoteSprint=false;}}
-    else if(remoteExhaustion<=0)remoteStamina=Math.min(100,remoteStamina+staminaRecovery*dt);
-    const speed=(remoteSlide.cooldown>0?111.105:(remoteExhaustion>0?111.1:(remoteSprint?200:remote.maxSpeed))),blend=1-Math.exp(-3.4*dt);
-    remote.vx+=(dx*speed-remote.vx)*blend;remote.vy+=(dy*speed-remote.vy)*blend;
-    remote.x+=remote.vx*dt;remote.y+=remote.vy*dt;boundPlayer(remote);
+    const state={stamina:remoteStamina,exhaustion:remoteExhaustion,slideCooldown:remoteSlide.cooldown,facing:remoteFacing,sprint:remoteSprint};
+    sharedMovement(remote,dt,remoteKeys,state);
+    remoteStamina=state.stamina;remoteExhaustion=state.exhaustion;remoteSprint=state.sprint;
   }
   function startRemoteSlide(){
     if(remoteSlide.active||remoteSlide.cooldown>0||restart.active)return;
@@ -1353,31 +1360,9 @@ input[type=range]{accent-color:#d6d6da}
     }
   }
   function moveHuman(p,dt){
-    let dx=0,dy=0;
-    if(keys.has('a')||keys.has('arrowleft'))dx--;
-    if(keys.has('d')||keys.has('arrowright'))dx++;
-    if(keys.has('w')||keys.has('arrowup'))dy--;
-    if(keys.has('s')||keys.has('arrowdown'))dy++;
-    const len=hypot(dx,dy)||1;dx/=len;dy/=len;
-    if(dx||dy){facing.x=dx;facing.y=dy;}
-    // Łagodne rozpędzanie i wyhamowywanie, bez natychmiastowego zatrzymania.
-    playerExhaustion=Math.max(0,playerExhaustion-dt);
-    let sprint=keys.has('shift') && stamina>0 && playerExhaustion<=0 && slide.cooldown<=0 && (dx!==0||dy!==0);
-    if(sprint){stamina=Math.max(0,stamina-staminaDrain*dt);if(stamina<=0){stamina=0;playerExhaustion=2;sprint=false;}}
-    else if(playerExhaustion<=0)stamina=Math.min(staminaMax,stamina+staminaRecovery*dt);
-    sprinting=sprint;
-    const targetSpeed=(slide.cooldown>0?111.105:(playerExhaustion>0?111.1:(sprint?200:p.maxSpeed)));
-    const desiredX=dx*targetSpeed,desiredY=dy*targetSpeed;
-    // Lekkie usprawnienie zwrotów przy piłce: zawodnik szybciej zmienia
-    // kierunek, ale piłka zachowuje własną bezwładność.
-    const nearBall=hypot(ball.x-p.x,ball.y-p.y)<p.r+ball.r+30 && hypot(ball.vx,ball.vy)<240;
-    const turning=dx||dy ? p.vx*dx+p.vy*dy < hypot(p.vx,p.vy)*.65 : false;
-    const response=(dx||dy)?(sprint?3.8:3.4):4.3;
-    const turnResponse=nearBall&&turning?response*1.38:response;
-    const blend=1-Math.exp(-turnResponse*dt);
-    p.vx+=(desiredX-p.vx)*blend;
-    p.vy+=(desiredY-p.vy)*blend;
-    p.x+=p.vx*dt;p.y+=p.vy*dt;boundPlayer(p);
+    const state={stamina,exhaustion:playerExhaustion,slideCooldown:slide.cooldown,facing,sprint:sprinting};
+    sharedMovement(p,dt,keys,state);
+    stamina=state.stamina;playerExhaustion=state.exhaustion;sprinting=state.sprint;
   }
   // Jeden wspólny mur dla OBU drużyn: niebieski gdy zaczyna lewa,
   // czerwony gdy zaczyna prawa. Obie strony pozostają po przeciwnych
@@ -2043,20 +2028,26 @@ input[type=range]{accent-color:#d6d6da}
       // Smooth snapshots; small local prediction for responsive remote movement.
       if(guestTarget){
         const elapsed=Math.min(.11,Math.max(0,(performance.now()-guestStateTime)/1000));
-        const follow=1-Math.exp(-15*dt);
+        const follow=1-Math.exp(-18*dt);
         for(const name of ['player','remote','bot','ownKeeper','ball']){
           const obj=({player,remote,bot,ownKeeper,ball})[name],target=guestTarget[name];
           if(!target)continue;
-          const lead=name==='remote'?Math.min(elapsed,.045):Math.min(elapsed,.06);
+          const isLocal=onlineRole==='guest'&&(name==='remote'&&selfNetId===primaryRemoteId);
+          const lead=isLocal?Math.min(elapsed,.075):Math.min(elapsed,.05);
           const tx=target.x+(target.vx||0)*lead,ty=target.y+(target.vy||0)*lead;
-          obj.x+=(tx-obj.x)*follow;obj.y+=(ty-obj.y)*follow;
+          const delta=Math.hypot(tx-obj.x,ty-obj.y);
+          const correction=isLocal?1-Math.exp(-23*dt):follow;
+          if(delta>150){obj.x=tx;obj.y=ty;}else{obj.x+=(tx-obj.x)*correction;obj.y+=(ty-obj.y)*correction;}
           obj.vx=target.vx||0;obj.vy=target.vy||0;
         }
         for(const [id,target] of smoothExtras){
           const p=extraPlayers.get(id);if(!p)continue;
-          const lead=Math.min(elapsed,.05);
+          const isLocal=onlineRole==='guest'&&id===selfNetId;
+          const lead=Math.min(elapsed,isLocal?.075:.05);
           const tx=target.x+target.vx*lead,ty=target.y+target.vy*lead;
-          p.x+=(tx-p.x)*follow;p.y+=(ty-p.y)*follow;
+          const delta=Math.hypot(tx-p.x,ty-p.y);
+          const correction=isLocal?1-Math.exp(-23*dt):follow;
+          if(delta>150){p.x=tx;p.y=ty;}else{p.x+=(tx-p.x)*correction;p.y+=(ty-p.y)*correction;}
           p.vx=target.vx;p.vy=target.vy;
         }
         remoteStamina=guestTarget.remoteStamina??remoteStamina;
